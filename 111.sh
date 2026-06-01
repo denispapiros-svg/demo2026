@@ -97,7 +97,9 @@ conf t
 hostname hq-rtr
 ip domain-name au-team.irpo
 ntp timezone utc+3
-username net_admin password P@ssw0rd role admin
+username net_admin 
+password P@ssw0rd 
+role admin
 ex
 write memory
 
@@ -205,7 +207,9 @@ conf t
 hostname br-rtr
 ip domain-name au-team.irpo
 ntp timezone utc+3
-username net_admin password P@ssw0rd role admin
+username net_admin 
+password P@ssw0rd 
+role admin
 ex
 write memory
 
