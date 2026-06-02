@@ -1,0 +1,572 @@
+МОДУЛЬ 1
+---------------------------------------------------------------------
+ISP:
+hostnamectl set-hostname isp && exec bash
+apt-get update && apt-get install tzdata iptables -y
+timedatectl set-timezone Europe/Moscow
+cd /etc/net/ifaces
+mkdir ens19 && mkdir ens20
+vim ens19/options
+	BOOTPROTO=static
+	TYPE=eth
+cp ens19/options ens20
+vim ens19/ipv4address
+	172.16.1.1/28
+vim ens20/ipv4address
+	172.16.2.1/28
+vim /etc/net/sysctl.conf
+	в 10 строке меняем 0 на 1
+	net.ipv4.ip_forward = 1
+systemctl restart network
+iptables -t nat -A POSTROUTING -s 172.16.1.0/28 -o ens18 -j MASQUERADE
+iptables -t nat -A POSTROUTING -s 172.16.2.0/28 -o ens18 -j MASQUERADE
+iptables-save >> /etc/sysconfig/iptables
+systemctl restart iptables
+---------------------------------------------------------------------
+HQ-RTR:
+en
+conf t
+hostname hq-rtr
+ip domain-name au-team.irpo
+ntp timezone utc+3
+username net_admin
+password P@ssw0rd
+role admin
+ex
+write memory
+int isp
+ip address 172.16.1.2/28
+ex
+ip route 0.0.0.0/0 172.16.1.1
+port te0
+service-instance te0/isp
+encapsulation untagged
+connect ip interface isp
+ex
+ex
+write memory
+	на этом моменте пойдет пинг от hq-rtr к 77.88.8.8
+int vl100
+ip address 192.168.100.1/27
+int vl200
+ip address 192.168.200.1/24
+int vl99
+ip address 192.168.99.1/29
+ex
+port te1
+service-instance te1/vl100
+encapsulation dot1q 100 exact
+rewrite pop 1
+connect ip interface vl100
+ex
+service-instance te1/vl200
+encapsulation dot1q 200 exact
+rewrite pop 1
+connect ip interface vl200
+ex
+service-instance te1/vl999
+encapsulation dot1q 999 exact
+rewrite pop 1
+connect ip interface vl999
+ex
+ex
+	на этом моменте пойдет пинг от hq-srv к hq-rtr
+int tunnel.0
+ip address 10.10.10.1/30
+ip tunnel 172.16.1.2 172.16.2.2 mode gre
+ex
+write memory
+router ospf 1
+ospf router-id 10.10.10.1
+passive-interface default 
+no passive-interface tunnel.0 
+network 10.10.10.0/30 area 0
+network 192.168.100.0/27 area 0
+network 192.168.200.0/24 area 0
+network 192.168.99.0/29 area 0
+ex
+int tunnel.0
+ip ospf authentication message-digest 
+ip ospf message-digest-key 1 md5 P@ssw0rd
+ex
+write memory
+int isp
+ip nat outside
+int vl100
+ip nat inside
+int vl200
+ip nat inside
+int vl999
+ip nat inside
+ex
+ip nat pool VLAN100 192.168.100.1-192.168.100.30
+ip nat pool VLAN200 192.168.200.1-192.168.200.254
+ip nat pool VLAN999 192.168.99.1-192.168.99.6
+ip nat source dynamic inside-to-outside pool VLAN100 overload interface isp
+ip nat source dynamic inside-to-outside pool VLAN200 overload interface isp
+ip nat source dynamic inside-to-outside pool VLAN999 overload interface isp
+write memory
+	на этом моменте пойдет пинг от hq-srv к 77.88.8.8
+ip pool VLAN200 192.168.200.2-192.168.200.254
+dhcp-server 1
+pool VLAN200 1
+mask 24
+gateway 192.168.200.1
+dns 192.168.100.2
+domain-name au-team.irpo
+ex
+exit
+int vl200
+dhcp-server 1
+ex
+write memory
+---------------------------------------------------------------------
+BR-RTR:
+en
+conf t
+hostname br-rtr
+ip domain-name au-team.irpo
+ntp timezone utc+3
+username net_admin
+password P@ssw0rd
+role admin
+ex
+write memory
+int isp
+ip address 172.16.2.2/28
+ex
+ip route 0.0.0.0/0 172.16.2.1
+port te0
+service-instance te0/isp
+encapsulation untagged
+connect ip interface isp
+ex
+ex
+write memory
+	на этом моменте пойдет пинг от br-rtr к 77.88.8.8
+int int1
+ip address 192.168.0.1/27
+ex
+port te1
+service-instance te1/int1
+encapsulation untagged
+connect ip interface int1
+ex
+ex
+	на этом моменте пойдет пинг от br-srv к br-rtr
+int tunnel.0
+ip address 10.10.10.2/30
+ip tunnel 172.16.2.2 172.16.1.2 mode gre
+ex
+write memory
+router ospf 1
+ospf router-id 10.10.10.2
+passive-interface default
+no passive-interface tunnel.0
+network 192.168.0.0/27 area 0
+network 10.10.10.0/30 area 0
+ex
+int tunnel.0
+ip ospf authentication message-digest
+ip ospf message-digest-key 1 md5 P@ssw0rd
+ex
+write memory
+int isp
+ip nat outside
+int int1
+ip nat inside
+ex
+ip nat pool BR-Net 192.168.0.1-192.168.0.14
+ip nat source dynamic inside-to-outside pool BR-Net overload interface isp
+write memory
+	на этом моменте пойдет пинг от br-srv к 77.88.8.8
+---------------------------------------------------------------------
+HQ-SRV: 
+hostnamectl set-hostname hq-srv.au-team.irpo && timedatectl set-timezone Europe/Moscow && exec bash
+cd /etc/net/ifaces/ens18
+rm options
+yes
+vim options
+	BOOTPROTO=static
+	TYPE=eth
+vim ipv4address
+	192.168.100.2/27
+vim ipv4route
+	default via 192.168.100.1
+vim resolv.conf
+	search au-team.irpo
+	nameserver 77.88.8.8
+	nameserver 192.168.100.2
+systemctl restart network
+useradd sshuser -u 2026
+usermod -aG wheel sshuser
+passwd sshuser
+P@ssw0rd
+P@ssw0rd
+vim /etc/sudoers
+	sshuser ALL=(ALL:ALL) NOPASSWD: ALL
+vim /etc/openssh/sshd_config
+	Port 2026
+	AllowUsers sshuser
+	MaxAuthTries 2
+	Banner /etc/openssh/banner
+vim /etc/openssh/banner
+	Authorized access only
+systemctl restart sshd
+
+	после того , как на hq-srv появился интернет пишем команды ниже
+apt-get update && apt-get install bind bind-utils -y
+vim /var/lib/bind/etc/options.conf
+	тут мы меняем параметры
+        listen-on { 192.168.100.2; };
+        listen-on-v6 { none; };
+        forwarders { 77.88.8.8; };
+        allow-query { any; };
+vim /var/lib/bind/etc/rfc1912.conf
+	zone "au-team.irpo" {
+        	type master;
+        	file "au-team.irpo";
+	};
+
+	zone "100.168.192.in-addr.arpa" {
+        	type master;
+        	file "100.168.192.in-addr.arpa";
+	};
+
+	zone "200.168.192.in-addr.arpa" {
+        	type master;
+        	file "200.168.192.in-addr.arpa";
+	};
+cp /var/lib/bind/etc/zone/empty /var/lib/bind/etc/zone/au-team.irpo
+cp /var/lib/bind/etc/zone/empty /var/lib/bind/etc/zone/100.168.192.in-addr.arpa
+cp /var/lib/bind/etc/zone/empty /var/lib/bind/etc/zone/200.168.192.in-addr.arpa
+vim /var/lib/bind/etc/zone/au-team.irpo
+	тут надо изменить в 7 строке слова localhost на au-team.irpo
+	@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+	далее в 14 строке так же изменить localhost на au-team.irpo
+	далее записываем
+	        IN      NS      au-team.irpo.
+	        IN      A       192.168.100.2
+	hq-srv  IN      A       192.168.100.2
+	hq-cli  IN      A       192.168.200.2
+	hq-rtr  IN      A       192.168.100.1
+	hq-rtr  IN      A       192.168.200.1
+	hq-rtr  IN      A       192.168.99.1
+	docker  IN      A       172.16.1.1
+	web     IN      A       172.16.2.1
+	br-srv  IN      A       192.168.0.2
+	br-rtr  IN      A       192.168.0.1
+vim /var/lib/bind/etc/zone/100.168.192.in-addr.arpa
+	тут надо изменить в 7 строке слова localhost на au-team.irpo
+	@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+	далее в 14 строке так же изменить localhost на au-team.irpo
+	далее записываем
+	        IN      NS      au-team.irpo.
+	1       IN      PTR     hq-rtr.au-team.irpo.
+	2       IN      PTR     hq-srv.au-team.irpo.
+vim /var/lib/bind/etc/zone/200.168.192.in-addr.arpa
+	тут надо изменить в 7 строке слова localhost на au-team.irpo
+	@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+	далее в 14 строке так же изменить localhost на au-team.irpo
+	далее записываем
+	        IN      NS      au-team.irpo.
+	1       IN      PTR     hq-rtr.au-team.irpo.
+	2       IN      PTR     hq-cli.au-team.irpo.
+rndc-confgen > /var/lib/bind/etc/rndc.key
+sed -i '6,$d' /var/lib/bind/etc/rndc.key
+chown -R root:named /etc/bind/zone/*
+systemctl enable --now bind.service
+vim /etc/net/ifaces/ens18/resolv.conf
+	приводим файл к виду
+	search au-team.irpo
+	nameserver 192.168.100.2
+systemctl restart network
+	после этого можно пингануть ya.ru
+---------------------------------------------------------------------
+BR-SRV:
+hostnamectl set-hostname br-srv.au-team.irpo && timedatectl set-timezone Europe/Moscow && exec bash
+cd /etc/net/ifaces/ens18
+rm options
+yes
+vim options
+	BOOTPROTO=static
+	TYPE=eth
+vim ipv4address
+	192.168.0.2/27
+vim ipv4route
+	default via 192.168.0.1
+vim resolv.conf
+	search au-team.irpo
+	nameserver 77.88.8.8
+	nameserver 192.168.100.2
+systemctl restart network
+useradd sshuser -u 2026
+usermod -aG wheel sshuser
+passwd sshuser
+P@ssw0rd
+P@ssw0rd
+vim /etc/sudoers
+	sshuser ALL=(ALL:ALL) NOPASSWD: ALL
+vim /etc/openssh/sshd_config
+	Port 2026
+	AllowUsers sshuser
+	MaxAuthTries 2
+	Banner /etc/openssh/banner
+vim /etc/openssh/banner
+	Authorized access only
+systemctl restart sshd
+---------------------------------------------------------------------
+HQ-CLI:
+hostnamectl set-hostname hq-cli.au-team.irpo && timedatectl set-timezone Europe/Moscow && exec bash
+	после настройки bind на hq-srv делаем следующее
+systemctl restart network
+	так же можем проверить , что работает команда host hq-rtr.au-team.irpo
+---------------------------------------------------------------------
+МОДУЛЬ 2
+---------------------------------------------------------------------
+ISP: 
+apt-get update && apt-get install nginx apache2-htpasswd -y
+echo "Port 2026" > /etc/openssh/sshd_config && systemctl restart sshd
+vim /etc/chrony.conf
+---
+server ntp0.ntp-servers.net iburst prefer minstratum 4
+local stratum 5
+allow 0.0.0.0/0
+---
+systemctl restart chronyd
+vim /etc/nginx/sites-available.d/default.conf
+---
+server {
+    listen 80;
+    server_name web.au-team.irpo;
+
+    location / {
+        proxy_pass http://172.16.1.2:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        auth_basic "Restricted area";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+    }
+}
+
+server {
+    listen 80;
+    server_name docker.au-team.irpo;
+
+    location / {
+        proxy_pass http://172.16.2.2:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+---
+ln -s /etc/nginx/sites-available.d/default.conf /etc/nginx/sites-enabled.d/
+htpasswd -c /etc/nginx/.htpasswd WEB
+P@ssw0rd
+P@ssw0rd
+systemctl enable --now nginx
+
+HQ-RTR: 
+apt-get update && apt-get install iptables -y
+echo "Port 2026" > /etc/openssh/sshd_config && systemctl restart sshd
+vim /etc/chrony.conf
+---
+server 172.16.1.1 iburst
+---
+systemctl restart chronyd
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A PREROUTING -p tcp -d 172.16.1.10 --dport 8080 -j DNAT --to-destination 192.168.1.10:80
+iptables -t nat -A PREROUTING -p tcp -d 172.16.1.10 --dport 2026 -j DNAT --to-destination 192.168.1.10:2026
+iptables-save >> /etc/sysconfig/iptables && systemctl enable --now iptables
+
+BR-RTR: 
+apt-get update && apt-get install iptables -y
+echo "Port 2026" > /etc/openssh/sshd_config && systemctl restart sshd
+vim /etc/chrony.conf
+---
+server 172.16.2.1 iburst
+---
+systemctl restart chronyd
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A PREROUTING -p tcp -d 172.16.2.10 --dport 8080 -j DNAT --to-destination 192.168.3.10:8080
+iptables -t nat -A PREROUTING -p tcp -d 172.16.2.10 --dport 2026 -j DNAT --to-destination 192.168.3.10:2026
+iptables-save >> /etc/sysconfig/iptables && systemctl enable --now iptables
+
+HQ-SRV: 
+apt-get update && apt-get install lamp-server mdadm nfs-server nfs-utils -y
+echo "Port 2026" > /etc/openssh/sshd_config && systemctl restart sshd
+mdadm --zero-superblock --force /dev/sdb /dev/sdc
+mdadm --create --verbose /dev/md0 -l 0 -n 2 /dev/sdb /dev/sdc
+mdadm --detail --scan --verbose | tee -a /etc/mdadm.conf
+mkfs.ext4 /dev/md0
+vim /etc/fstab
+---
+/dev/md0        /raid   ext4    defaults        0       0
+---
+mkdir /raid
+mount -av
+mkdir /raid/nfs
+chmod 777 /raid/nfs
+vim /etc/exports
+---
+/raid/nfs       192.168.2.0/28(rw,no_root_squash)
+---
+exportfs -arv
+systemctl enable --now nfs-server
+vim /etc/chrony.conf
+---
+server 172.16.1.1 iburst
+---
+systemctl restart chronyd
+mount /dev/sr0 /mnt/
+cp /mnt/web/index.php /var/www/html && cp /mnt/web/logo.png /var/www/html
+---
+приводим начало файла к виду
+<?php
+$servername = "localhost";
+$username = "webc";
+$password = "P@ssw0rd";
+$dbname = "webdb";
+---
+systemctl enable --now mariadb
+mariadb -u root
+CREATE DATABASE webdb;
+CREATE USER 'webc'@'localhost' IDENTIFIED BY 'P@ssw0rd';
+GRANT ALL PRIVILEGES ON webdb.* TO 'webc'@'localhost' WITH GRANT OPTION;
+EXIT;
+systemctl enable --now httpd2
+
+BR-SRV: 
+apt-get update && apt-get install docker-engine docker-compose-v2 task-samba-dc ansible sshpass python3-module-pip -y && pip3 install ansible-pylibssh
+rm -f /etc/samba/smb.conf && rm -rf /var/lib/samba && rm -rf /var/cache/samba && mkdir -p /var/lib/samba/sysvol
+samba-tool domain provision
+	везде нажимаем Enter , пароль P@ssw0rd
+systemctl enable --now samba
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+yes
+systemctl restart samba
+vim /etc/net/ifaces/enp7s1/resolv.conf
+---
+приводим к виду
+search au-team.irpo
+nameserver 192.168.1.10
+nameserver 127.0.0.1
+---
+systemctl restart network
+samba-tool group add hq
+---
+далее в терминал вписать все это
+for i in {1..5}; 
+do
+samba-tool user add hquser$i P@ssw0rd;
+samba-tool user setexpiry hquser$i --noexpiry;
+samba-tool group addmembers "hq" hquser$i;
+done
+---
+vim /etc/chrony.conf
+	server 172.16.2.1 iburst
+systemctl restart chronyd
+vim /etc/ansible/hosts
+---
+[Routers]
+HQ-RTR ansible_host=192.168.5.1
+BR-RTR ansible_host=192.168.3.1
+
+[Clients]
+HQ-CLI ansible_host=192.168.2.10
+
+[Servers:vars]
+ansible_user=sshuser
+ansible_password=P@ssw0rd
+ansible_port=2026
+
+[Routers:vars]
+ansible_user=net_admin
+ansible_password=P@ssw0rd
+ansible_port=2026
+
+[Clients:vars]
+ansible_user=user
+ansible_password=resu
+ansible_port=2026
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+---
+vim /etc/ansible/ansible.cfg
+---
+приводим к виду
+[defaults]
+
+inventory = /etc/ansible/hosts
+host_key_checking = False
+---
+systemctl enable --now docker.service
+mount /dev/sr0 /mnt/
+docker load < /mnt/docker/site_latest.tar
+docker load < /mnt/docker/mariadb_latest.tar
+vim compose.yaml
+---
+services:
+  database:
+    container_name: db
+    image: mariadb:10.11
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MARIADB_DATABASE: "testdb"
+      MARIADB_USER: "testc"
+      MARIADB_PASSWORD: "P@ssw0rd"
+      MARIADB_ROOT_PASSWORD: "toor"
+
+  app:
+    container_name: testapp
+    image: site:latest
+    restart: always
+    ports:
+      - "8080:8000"
+    environment:
+      DB_TYPE: "maria"
+      DB_HOST: "192.168.3.10"
+      DB_PORT: "3306"
+      DB_NAME: "testdb"
+      DB_USER: "testc"
+      DB_PASS: "P@ssw0rd"
+    depends_on:
+      - database
+---
+docker compose up -d
+
+HQ-CLI: 
+apt-get update && apt-get install task-auth-ad-sssd libnss-role nfs-utils nfs-clients yandex-browser-stable -y
+echo "Port 2026" > /etc/openssh/sshd_config && systemctl restart sshd
+vim /etc/resolv.conf
+	приводим к виду
+	search au-team.irpo
+	nameserver 192.168.3.10
+	далее авторизовываемся в домен au-team.irpo
+roleadd hq wheel
+vim /etc/sudoers
+	Cmnd_Alias      SHELLCMD = /bin/cat, /bin/grep, /usr/bin/id
+mkdir /mnt/nfs 
+chmod 777 /mnt/nfs 
+vim /etc/fstab
+---
+192.168.1.10:/raid/nfs  /mnt/nfs        nfs     defaults        0       0
+---
+mount -av
+vim /etc/chrony.conf
+---
+server 172.16.1.1 iburst
+---
+systemctl restart chronyd
+vim /etc/hosts
+---
+172.16.1.1     web.au-team.irpo
+172.16.1.1     docker.au-team.irpo
+---
